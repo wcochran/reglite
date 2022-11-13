@@ -84,13 +84,16 @@ int main(int argc, char *argv[]) {
 	using rect_type = output_rect_t<spaces_type>;
 	std::vector<rect_type> rectangles;
 
+    constexpr int padding = 4;
+    constexpr double bboxScale = 2.0;
+
     for (size_t i = 0; i < closestPoints.size(); i++) {
         const Point2f& p = closestPoints[i];
         const std::array<float,4>& shape = closestShapes[i];
         const Eigen::Matrix2f A{{shape[0], shape[1]},
                                 {shape[2], shape[3]}};
-        const double scaleX = A.col(0).norm();
-        const double scaleY = A.col(1).norm();
+        const double scaleX = A.col(0).norm() * bboxScale;
+        const double scaleY = A.col(1).norm() * bboxScale;
         const double orientation = std::atan2(A(1,0), A(0,0));
         const double c = cos(orientation), s = sin(orientation);
         const Eigen::Vector2d u = scaleX * Eigen::Vector2d(c, s);
@@ -110,7 +113,7 @@ int main(int argc, char *argv[]) {
         Rect rect(x0, y0, W, H);
         Mat patch = image(rect);
         patches.emplace_back(std::move(patch));
-        rectangles.emplace_back(rect_xywh(0,0,W,H));
+        rectangles.emplace_back(rect_xywh(0,0,W+padding,H+padding));
     }
 
 	const auto max_side = 1000;
@@ -145,13 +148,13 @@ int main(int argc, char *argv[]) {
 
     Mat packedPatches(result_size.h, result_size.w, CV_8UC3, Scalar(0, 0, 0));
     for (auto&& patch : patches) {
-        const auto wh = std::make_pair(patch.cols,patch.rows);
+        const auto wh = std::make_pair(patch.cols + padding, patch.rows + padding);
         auto iter = rectToIndex.find(wh);
         assert(iter != rectToIndex.end());
         const size_t index = iter->second;
         const auto rect = rectangles[index];
-        Rect roi(rect.x,rect.y,rect.w,rect.h);
-        packedPatches(roi) = patch;
+        Rect roi(rect.x,rect.y,rect.w - padding,rect.h - padding);
+        patch.copyTo(packedPatches(roi));
         rectToIndex.erase(iter);
     }
 

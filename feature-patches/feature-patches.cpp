@@ -38,9 +38,9 @@ void to_json(json& j, const PatchInfo& patch) {
 
 int main(int argc, char *argv[]) {
 
-    if (argc != 5) {
+    if (argc < 5 || argc > 7) {
         std::cerr << "usage: " << argv[0]
-                  << " image_corr.json image.jpg patches.jpg patches.json\n";
+                  << " image_corr.json image.jpg patches.jpg patches.json [patch-scale=1 [padding=0]]\n";
         exit(1);
     }
 
@@ -48,6 +48,25 @@ int main(int argc, char *argv[]) {
     std::string image_path(argv[2]);
     std::string patches_image_path(argv[3]);
     std::string patches_metadata_path(argv[4]);
+
+    double bboxScale = 1.0; // amount scale feature/ellipse bounding box by for patch size
+    int padding = 0;        // padding between packed patches
+
+    if (argc >= 6) {
+        bboxScale = std::stod(std::string(argv[5]));
+        if (bboxScale < 0.7 || bboxScale > 3.0) {
+            std::cerr << "patch-scale is whack!\n";
+            exit(2);
+        }
+    }
+
+    if (argc >= 7) {
+        padding = std::stoi(std::string(argv[6]));
+        if (padding < 0 || padding > 20) {
+            std::cerr << "patch padding is whack!\n";
+            exit(3);
+        }
+    }
 
     Mat image = imread(image_path, IMREAD_COLOR);
     if (image.empty()) {
@@ -107,8 +126,7 @@ int main(int argc, char *argv[]) {
 	using rect_type = output_rect_t<spaces_type>;
 	std::vector<rect_type> rectangles;
 
-    constexpr int padding = 4;
-    constexpr double bboxScale = 1.414;
+
 
     for (size_t i = 0; i < closestPoints.size(); i++) {
         const Point2f& p = closestPoints[i];

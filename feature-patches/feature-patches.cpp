@@ -16,6 +16,9 @@ using nlohmann::json;
 using namespace cv;
 using namespace rectpack2D;
 
+//
+// Feature image patch metadata.
+//
 struct PatchInfo {
     Eigen::Vector2f keypoint;         // position of feature in original image
     cv::Rect rect;                    // location and size of patch in original image
@@ -49,8 +52,8 @@ int main(int argc, char *argv[]) {
     std::string patches_image_path(argv[3]);
     std::string patches_metadata_path(argv[4]);
 
-    double bboxScale = 1.0; // amount scale feature/ellipse bounding box by for patch size
-    int padding = 0;        // padding between packed patches
+    double bboxScale = 1.0; // amount to scale feature/ellipse bounding box for patch size
+    int padding = 0;        // padding between packed patch rectangles
 
     if (argc >= 6) {
         bboxScale = std::stod(std::string(argv[5]));
@@ -68,6 +71,9 @@ int main(int argc, char *argv[]) {
         }
     }
 
+    //
+    // Open input frame.
+    //
     Mat image = imread(image_path, IMREAD_COLOR);
     if (image.empty()) {
         std::cerr << "Unable to open input image '"
@@ -78,7 +84,13 @@ int main(int argc, char *argv[]) {
     
     std::vector<Point2f> closestPoints;
     std::vector<std::array<float,4>> closestShapes;
-    
+
+    //
+    // Parse registration "corr" file result.
+    // We assume that the following extra "debug" data is added
+    //    "closestPoints" : keypoints (center of feature ellipse)
+    //    "closestFeatureShapes" : associated 2x2 affine matrix for each feature
+    //
     {
         std::ifstream is(regdata_json_path);
         if (!is.is_open()) {
@@ -117,17 +129,24 @@ int main(int argc, char *argv[]) {
 
     assert(closestPoints.size() == closestShapes.size());
 
+    //
+    // Storage for individual patches and meta-data
+    //
     std::vector<Mat> patches;
     std::vector<PatchInfo> patchMetadata;
 
+    //
+    // Rectangle packing setup.
+    //
 	constexpr bool allow_flip = false;
 	const auto runtime_flipping_mode = flipping_option::DISABLED;
 	using spaces_type = rectpack2D::empty_spaces<allow_flip, default_empty_spaces>;
 	using rect_type = output_rect_t<spaces_type>;
 	std::vector<rect_type> rectangles;
 
-
-
+    //
+    // Harvest all the patches, patch meta-data, and rectangle packing data.
+    //
     for (size_t i = 0; i < closestPoints.size(); i++) {
         const Point2f& p = closestPoints[i];
         const std::array<float,4>& shape = closestShapes[i];
@@ -154,7 +173,7 @@ int main(int argc, char *argv[]) {
         if (W < 2 || H < 2) continue;
         Rect rect(x0, y0, W, H);
         const bool is_inside = (rect & imageRect) == rect;
-        if (!is_inside) continue;
+        if (!is_inside) continue; // we will ignore patches outside image support
         Mat patch = image(rect);
         patches.emplace_back(std::move(patch));
         rect_xywh packedRect(0,0,W+padding,H+padding);
@@ -163,6 +182,9 @@ int main(int argc, char *argv[]) {
         patchMetadata.emplace_back(info);
     }
 
+    //
+    // Compute rectangle packing data.
+    //
 	const auto max_side = 1000;
 	const auto discard_step = -4;
     bool packing_success = true;
@@ -187,7 +209,12 @@ int main(int argc, char *argv[]) {
         exit(-1);
     }
 
-    std::multimap<std::pair<int,int>,size_t> rectToIndex;
+    //
+    // find_best_packing() sorted our rectangles array, so
+    // we create a multi-map to find the appropriately sized
+    // rectangle in the permuted rectangles array.
+    //
+    std::multimap<std::pair<int,int>,size_t> rectToIndex;  // maps w,h to index
     for (size_t i = 0; i < rectangles.size(); i++) {
         const auto& rect = rectangles[i];
         rectToIndex.insert({std::make_pair(rect.w,rect.h),i});
@@ -195,6 +222,10 @@ int main(int argc, char *argv[]) {
 
     assert(patches.size() == patchMetadata.size());
 
+    //
+    // Create "packed patches" image and write the patches into
+    // the proper packed locations.
+    //
     Mat packedPatches(result_size.h, result_size.w, CV_8UC3, Scalar(0, 0, 0));
     for  (size_t i = 0; i < patches.size(); i++) {
         auto& patch = patches[i];
@@ -213,6 +244,9 @@ int main(int argc, char *argv[]) {
 
     imwrite(patches_image_path, packedPatches);
 
+    //
+    // Output patch metadata as JSON file.
+    //
     json patchData = json::array();
     for (auto&& patchInfo : patchMetadata) {
         json j = json::object();

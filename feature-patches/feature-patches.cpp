@@ -23,11 +23,11 @@ struct PatchInfo {
     Eigen::Vector2f keypoint;         // position of feature in original image
     cv::Rect rect;                    // location and size of patch in original image
     rectpack2D::rect_xywh packedRect; // location and size of patch in packed rectangle image
-    Eigen::Vector3f point3D;          // corresponding 3D location (unused at the moment)
+    Eigen::Vector3d point3D;          // corresponding 3D location (unused at the moment)
     PatchInfo(float x, float y,
               cv::Rect rect,
               rectpack2D::rect_xywh patch,
-              float X = 0, float Y = 0, float Z = 0)
+              double X = 0, double Y = 0, double Z = 0)
     : keypoint{x,y}, rect{rect}, packedRect{patch}, point3D{X,Y,Z} {}
 };
 
@@ -84,6 +84,7 @@ int main(int argc, char *argv[]) {
     
     std::vector<Point2f> closestPoints;
     std::vector<std::array<float,4>> closestShapes;
+    std::vector<Eigen::Vector3d> closest3DPoints;
 
     //
     // Parse registration "corr" file result.
@@ -125,9 +126,26 @@ int main(int argc, char *argv[]) {
             std::copy(&flattenedShapes[i], &flattenedShapes[i+4], a.begin());
             closestShapes.emplace_back(a);
         }
+
+        if (camera_json.find("closest3DPoints") == camera_json.end()) {
+            std::cerr << "warning: no closest3DPoints key\n";
+        } else {
+            std::vector<double> flattened3DPoints = camera_json["closest3DPoints"].get<std::vector<double>>();
+            for (size_t i = 0; i < flattened3DPoints.size(); i += 3) {
+                std::array<double,3> a;
+                std::copy(&flattened3DPoints[i], &flattened3DPoints[i+3], a.begin());
+                Eigen::Vector3d P(a[0], a[1], a[2]);
+                closest3DPoints.emplace_back(P);
+            }
+        }
+
     }
 
+    // XXX std::cout << "closestPoints.size() = " << closestPoints.size() << "\n";
+    // XXX std::cout << "closest3DPoints.size() = " << closest3DPoints.size() << "\n";
+
     assert(closestPoints.size() == closestShapes.size());
+    assert(closest3DPoints.empty() || closest3DPoints.size() == closestPoints.size());
 
     //
     // Storage for individual patches and meta-data
@@ -178,7 +196,10 @@ int main(int argc, char *argv[]) {
         patches.emplace_back(std::move(patch));
         rect_xywh packedRect(0,0,W+padding,H+padding);
         rectangles.emplace_back(packedRect);
-        PatchInfo info{p.x, p.y, rect, packedRect};
+        Eigen::Vector3d P{0,0,0};
+        if (!closest3DPoints.empty())
+            P = closest3DPoints[i];
+        PatchInfo info{p.x, p.y, rect, packedRect, P.x(), P.y(), P.z()};
         patchMetadata.emplace_back(info);
     }
 

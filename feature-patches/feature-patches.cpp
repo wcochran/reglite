@@ -141,9 +141,6 @@ int main(int argc, char *argv[]) {
 
     }
 
-    // XXX std::cout << "closestPoints.size() = " << closestPoints.size() << "\n";
-    // XXX std::cout << "closest3DPoints.size() = " << closest3DPoints.size() << "\n";
-
     assert(closestPoints.size() == closestShapes.size());
     assert(closest3DPoints.empty() || closest3DPoints.size() == closestPoints.size());
 

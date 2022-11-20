@@ -83,10 +83,10 @@ int main(int argc, char *argv[]) {
 
         assert(patches_json.is_array());
         for (auto&& pj : patches_json) {
-            assert(pj.find("packed_pos") == pj.end());
+            assert(pj.find("packed_pos") != pj.end());
             assert(pj["packed_pos"].is_array());
             std::vector<int> ppos = pj["packed_pos"].get<std::vector<int>>();
-            assert(pj.find("patch_size") == pj.end());
+            assert(pj.find("patch_size") != pj.end());
             assert(pj["patch_size"].is_array());
             std::vector<int> psize = pj["patch_size"].get<std::vector<int>>();
             Rect rect(ppos[0], ppos[1], psize[0], psize[1]);
@@ -102,6 +102,9 @@ int main(int argc, char *argv[]) {
     };
     std::vector<MatchInfo> matchesInfo;
 
+    double matchesValuesSum = 0;
+    double matchesValuesSquaredSum = 0;
+
     for (auto&& rect : packedRects) {
         Mat patch = patchesGrayImage(rect);
         Mat result;
@@ -109,11 +112,20 @@ int main(int argc, char *argv[]) {
         double minVal, maxVal;
         Point minLoc, maxLoc;
         minMaxLoc(result, &minVal, &maxVal, &minLoc,  &maxLoc);
+        matchesValuesSum += maxVal;
+        matchesValuesSquaredSum += maxVal*maxVal;
         matchesInfo.emplace_back(MatchInfo{maxVal, maxLoc});
         const Scalar color(0, 255, 255); // BGRR
         constexpr int thickness = 2;
-        rectangle(image, rect, color, thickness);
+        Rect matchRect{maxLoc.x, maxLoc.y, rect.width, rect.height};
+        rectangle(image, matchRect, color, thickness);
     }
+
+    const double matchesValuesMean = matchesValuesSum / packedRects.size();
+    const double matchesValuesVar = matchesValuesSquaredSum/packedRects.size() - matchesValuesMean*matchesValuesMean;
+    const double matchesValuesStdDev = std::sqrt(matchesValuesVar);
+    std::cout << "Matches value mean  = " << matchesValuesMean << "\n";
+    std::cout << "Matches value stdev = " << matchesValuesStdDev << "\n";
 
     imwrite(matchesImagePatch, image);
 

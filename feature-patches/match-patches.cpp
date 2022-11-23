@@ -81,6 +81,7 @@ int main(int argc, char *argv[]) {
 
     struct PatchInfo {
         Rect packedRect;
+        Point2d keypoint;
         Point2d keypointOffset;
         Point3d point3d;
         Point2d point2d;
@@ -109,9 +110,9 @@ int main(int argc, char *argv[]) {
             assert(pj["keypoint"].is_array());
             std::vector<double> keypoint = pj["keypoint"].get<std::vector<double>>();
             
-            assert(pj.find("patchPos") != pj.end());
-            assert(pj["patchPos"].is_array());
-            std::vector<int> patchPos = pj["patchPos"].get<std::vector<int>>();
+            assert(pj.find("patch_pos") != pj.end());
+            assert(pj["patch_pos"].is_array());
+            std::vector<int> patchPos = pj["patch_pos"].get<std::vector<int>>();
 
             const double kOffsetX = keypoint[0] - patchPos[0];
             const double kOffsetY = keypoint[1] - patchPos[1];
@@ -131,6 +132,7 @@ int main(int argc, char *argv[]) {
 
             PatchInfo patchInfo;
             patchInfo.packedRect = rect;
+            patchInfo.keypoint = Point2d(keypoint[0], keypoint[1]);
             patchInfo.keypointOffset = Point2d(kOffsetX, kOffsetY);
             patchInfo.point3d = Point3d(P.x(),P.y(),P.z());
             patchData.emplace_back(std::move(patchInfo));
@@ -140,7 +142,7 @@ int main(int argc, char *argv[]) {
     // clip points3D to view frustum ??
     
     Mat rot = Mat::eye(3,3,CV_64F);
-    Mat rotVec; // XXX = Mat::zeros(3,1,CV_64F);
+    Mat rotVec = Mat::zeros(3,1,CV_64F);
     Rodrigues(rotVec, rot);
     auto transVec = Vec<double,3>::zeros();
     Mat K = Mat::eye(3,3,CV_64F);
@@ -202,7 +204,9 @@ int main(int argc, char *argv[]) {
             matchesValuesSquaredSum += maxVal*maxVal;
             matchesSum++;
             matchesInfo.emplace_back(MatchInfo{maxVal, maxLoc, true});
-            Rect matchRect{maxLoc.x, maxLoc.y, packedRect.width, packedRect.height};
+            Rect matchRect{clampedSearchRect.x + maxLoc.x,
+                           clampedSearchRect.y + maxLoc.y,
+                           packedRect.width, packedRect.height};
         
             constexpr int thickness = 2;
             const Scalar targetColor(255, 255, 0); // BGR

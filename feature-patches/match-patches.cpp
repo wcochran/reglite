@@ -143,7 +143,7 @@ int main(int argc, char *argv[]) {
     
     Mat rot = Mat::eye(3,3,CV_64F);
     Mat rotVec = Mat::zeros(3,1,CV_64F);
-    Rodrigues(rotVec, rot);
+    Rodrigues(rot, rotVec);
     auto transVec = Vec<double,3>::zeros();
     Mat K = Mat::eye(3,3,CV_64F);
     K.at<double>(0,0) = imageData.deviceIntrinsicMatrix(0,0);

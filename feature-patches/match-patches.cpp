@@ -36,7 +36,7 @@ int main(int argc, char *argv[]) {
 
     if (argc != 8) {
         std::cerr << "usage: " << argv[0]
-                  << " image.jgp image.json image_corr.json patches.jpg patches.json matches.jpg matches.json\n";
+                  << " image.jpg image.json image_corr.json patches.jpg patches.json matches.jpg matches.json\n";
         exit(1);
     }
 
@@ -66,8 +66,13 @@ int main(int argc, char *argv[]) {
     readRegResultJSON(regJSONPath, regData);
 
     Eigen::Matrix4d rotateYDown{{1,0,0,0}, {0,-1,0,0}, {0,0,-1,0}, {0,0,0,1}};
+#define USE_CORRECTION_MATRIX
+#ifdef USE_CORRECTION_MATRIX
     Eigen::Matrix4d correctedExtrinsicTransform =
         rotateYDown * imageData.deviceExtrinsicMatrix.inverse() * regData.correctionMatrix;
+#else
+    Eigen::Matrix4d extrinsicMatrix = regData.extrinsicMatrix * regData.colmap2world.inverse();
+#endif
     
     Mat patchesImage = imread(patchesImagePath, IMREAD_COLOR);
     if (patchesImage.empty()) {
@@ -128,7 +133,11 @@ int main(int argc, char *argv[]) {
             assert(pj.find("patch_point3D") != pj.end());
             assert(pj["patch_point3D"].is_array());
             std::vector<double> pp = pj["patch_point3D"].get<std::vector<double>>();
-            auto P = correctedExtrinsicTransform * Eigen::Vector4d(pp[0], pp[1], pp[2], 1);
+#ifdef USE_CORRECTION_MATRIX
+            const Eigen::Vector4d P = correctedExtrinsicTransform * Eigen::Vector4d(pp[0], pp[1], pp[2], 1);
+#else
+            const Eigen::Vector4d P = extrinsicMatrix * Eigen::Vector4d(pp[0], pp[1], pp[2], 1);
+#endif
 
             PatchInfo patchInfo;
             patchInfo.packedRect = rect;
@@ -140,7 +149,11 @@ int main(int argc, char *argv[]) {
     }
 
     // clip points3D to view frustum ??
-    
+
+    const bool lensDistortion = regData.camera_model == "SIMPLE_RADIAL";
+    const double K1 = lensDistortion ? regData.distCoeffs[0] : 0;
+
+#ifdef PROJECT_OPENCV
     Mat rot = Mat::eye(3,3,CV_64F);
     Mat rotVec = Mat::zeros(3,1,CV_64F);
     Rodrigues(rot, rotVec);
@@ -150,7 +163,8 @@ int main(int argc, char *argv[]) {
     K.at<double>(1,1) = imageData.deviceIntrinsicMatrix(1,1);
     K.at<double>(0,2) = imageData.deviceIntrinsicMatrix(0,2);
     K.at<double>(1,2) = imageData.deviceIntrinsicMatrix(1,2);
-    static const std::vector<double> distCoeffs = {0,0,0,0};
+    static const std::vector<double> distCoeffs = {K1,0,0,0};
+#endif
     
     std::vector<Point3d> points3D(patchData.size());
     std::transform(patchData.begin(), patchData.end(), points3D.begin(),
@@ -159,7 +173,22 @@ int main(int argc, char *argv[]) {
                    });
 
     std::vector<Point2d> imagePoints(points3D.size());
+#ifdef PROJECT_OPENCV
     projectPoints(points3D, rotVec, transVec, K, distCoeffs, imagePoints);
+#else
+    for (size_t i = 0; i < points3D.size(); i++) {
+        const auto& p = points3D[i];
+        Eigen::Vector3d P(p.x, p.y, p.z);
+        P /= P.z();
+        if (lensDistortion) {
+            const double r2 = P.head<2>().squaredNorm();
+            const double distortion = 1 + K1*r2;
+            P.head<2>() *= distortion;
+        }
+        Eigen::Vector3d U = imageData.deviceIntrinsicMatrix * P;
+        imagePoints[i] = Point2d(U.x(), U.y());
+    }
+#endif
 
     for (size_t i = 0; i < imagePoints.size(); i++)
         patchData[i].point2d = imagePoints[i];
@@ -182,7 +211,9 @@ int main(int argc, char *argv[]) {
     for (auto&& patchInfo : patchData) {
         const auto packedRect = patchInfo.packedRect;
         Mat patch = patchesGrayImage(packedRect);
-
+//        const std::string patchImageNameXXX =
+//            "patch-" + std::to_string(packedRect.x) + "-" + std::to_string(packedRect.y) + ".png";
+//        imwrite(patchImageNameXXX, patch);
         Rect targetRect(int(std::floor(patchInfo.point2d.x - packedRect.width/2.0)),
                         int(std::floor(patchInfo.point2d.y - packedRect.height/2.0)),
                         packedRect.width, packedRect.height);
@@ -196,7 +227,11 @@ int main(int argc, char *argv[]) {
         if (clampedSearchRect.width >= targetRect.width &&
             clampedSearchRect.height >= targetRect.height) {
             Mat result;
-            matchTemplate(grayImage(clampedSearchRect), patch, result, TM_CCOEFF_NORMED);
+            Mat searchImage = grayImage(clampedSearchRect);
+//            const std::string searchImageNameXXX =
+//                 "search-" + std::to_string(packedRect.x) + "-" + std::to_string(packedRect.y) + ".png";
+//            imwrite(searchImageNameXXX, searchImage);
+            matchTemplate(searchImage, patch, result, TM_CCOEFF_NORMED);
             double minVal, maxVal;
             Point minLoc, maxLoc;
             minMaxLoc(result, &minVal, &maxVal, &minLoc,  &maxLoc);

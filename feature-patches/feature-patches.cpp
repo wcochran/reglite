@@ -24,11 +24,12 @@ struct PatchInfo {
     cv::Rect rect;                    // location and size of patch in original image
     rectpack2D::rect_xywh packedRect; // location and size of patch in packed rectangle image
     Eigen::Vector3d point3D;          // corresponding 3D location (unused at the moment)
+    double normReprojError;           // normalized re-projection error
     PatchInfo(float x, float y,
               cv::Rect rect,
               rectpack2D::rect_xywh patch,
-              double X = 0, double Y = 0, double Z = 0)
-    : keypoint{x,y}, rect{rect}, packedRect{patch}, point3D{X,Y,Z} {}
+              double X = 0, double Y = 0, double Z = 0, err=0)
+        : keypoint{x,y}, rect{rect}, packedRect{patch}, point3D{X,Y,Z}, normReprojError{e} {}
 };
 
 void to_json(json& j, const PatchInfo& patch) {
@@ -37,6 +38,7 @@ void to_json(json& j, const PatchInfo& patch) {
     j["patch_size"] = {patch.rect.width, patch.rect.height};
     j["packed_pos"] = {patch.packedRect.x, patch.packedRect.y};
     j["patch_point3D"] = {patch.point3D.x(), patch.point3D.y(), patch.point3D.z()};
+    j["norm_reproj_error"] = patch.normReprojError;
 }
 
 int main(int argc, char *argv[]) {
@@ -82,16 +84,18 @@ int main(int argc, char *argv[]) {
     }
     Rect imageRect(0, 0, image.cols, image.rows);
     
-    std::vector<Point2f> closestPoints;
-    std::vector<std::array<float,4>> closestShapes;
-    std::vector<Eigen::Vector3d> closest3DPoints;
+    std::vector<Point2f> featurePoints;
+    std::vector<std::array<float,4>> featuresShapes;
+    std::vector<Eigen::Vector3d> feature3DPoints;
+    std::vector<double> normalizedReprojectionErrors;
 
     //
     // Parse registration "corr" file result.
     // We assume that the following extra "debug" data is added
-    //    "closestPoints" : keypoints (center of feature ellipse)
-    //    "closestFeatureShapes" : associated 2x2 affine matrix for each feature
-    //
+    //    "accurateFeaturePoints" : [u0, v0, ... ]
+    //    "accurate3DPoints": [x0, y0, z0, ... ]
+    //    "accurateFeatureShapes" : [a0_11, a0_12, a0_21, a00_22, ... ]
+    //    ""accurateNormalizedSquaredReprojectionErrors": [e0, e1, ... ]
     {
         std::ifstream is(regdata_json_path);
         if (!is.is_open()) {
@@ -106,43 +110,44 @@ int main(int argc, char *argv[]) {
             exit(-1);
         }
 
-        if (camera_json.find("closestPoints") == camera_json.end() ||
-            camera_json.find("closestFeatureShapes") == camera_json.end()) {
-            std::cerr << "Keys 'closestPoints' or 'closestFeatureShapes' not found!\n";
+        if (camera_json.find("accurateFeaturePoints") == camera_json.end() ||
+            camera_json.find("accurate3DPoints") == camera_json.end() ||
+            camera_json.find("accurateFeatureShapes") == camera_json.end() ||
+            camera_json.find("accurateNormalizedSquaredReprojectionErrors") == camera_json.end()) {
+            std::cerr << "Missing harvest 2D/3D information!\n";
             exit(2);
         }
         
         std::vector<float> flattenedPoints =
-            camera_json["closestPoints"].get<std::vector<float>>();
+            camera_json["accurateFeaturePoints"].get<std::vector<float>>();
         for (size_t i = 0; i < flattenedPoints.size(); i += 2) {
             const float x = flattenedPoints[i];
             const float y = flattenedPoints[i+1];
-            closestPoints.emplace_back(Point2f(x,y));
+            featurePoints.emplace_back(Point2f(x,y));
         }
         
-        std::vector<float> flattenedShapes = camera_json["closestFeatureShapes"].get<std::vector<float>>();
+        std::vector<double> flattened3DPoints = camera_json["accurate3DPoints"].get<std::vector<double>>();
+        for (size_t i = 0; i < flattened3DPoints.size(); i += 3) {
+            std::array<double,3> a;
+            std::copy(&flattened3DPoints[i], &flattened3DPoints[i+3], a.begin());
+            Eigen::Vector3d P(a[0], a[1], a[2]);
+            feature3DPoints.emplace_back(P);
+        }
+
+        std::vector<float> flattenedShapes = camera_json["accurateFeatureShapes"].get<std::vector<float>>();
         for (size_t i = 0; i < flattenedShapes.size(); i += 4) {
             std::array<float,4> a;
             std::copy(&flattenedShapes[i], &flattenedShapes[i+4], a.begin());
-            closestShapes.emplace_back(a);
+            featureShapes.emplace_back(a);
         }
 
-        if (camera_json.find("closest3DPoints") == camera_json.end()) {
-            std::cerr << "warning: no closest3DPoints key\n";
-        } else {
-            std::vector<double> flattened3DPoints = camera_json["closest3DPoints"].get<std::vector<double>>();
-            for (size_t i = 0; i < flattened3DPoints.size(); i += 3) {
-                std::array<double,3> a;
-                std::copy(&flattened3DPoints[i], &flattened3DPoints[i+3], a.begin());
-                Eigen::Vector3d P(a[0], a[1], a[2]);
-                closest3DPoints.emplace_back(P);
-            }
-        }
-
+        normalizedReprojectionErrors =
+            camera_json["accurateNormalizedSquaredReprojectionErrors"].get<std::vector<double>();
     }
 
-    assert(closestPoints.size() == closestShapes.size());
-    assert(closest3DPoints.empty() || closest3DPoints.size() == closestPoints.size());
+    assert(featurePoints.size() == feature3DPoints.size());
+    assert(featurePoints.size() == featureShapes.size());
+    assert(featurePoints.size() == normalizedReprojectionErrors.size());
 
     //
     // Storage for individual patches and meta-data
@@ -162,9 +167,9 @@ int main(int argc, char *argv[]) {
     //
     // Harvest all the patches, patch meta-data, and rectangle packing data.
     //
-    for (size_t i = 0; i < closestPoints.size(); i++) {
-        const Point2f& p = closestPoints[i];
-        const std::array<float,4>& shape = closestShapes[i];
+    for (size_t i = 0; i < featurePoints.size(); i++) {
+        const Point2f& p = featurePoints[i];
+        const std::array<float,4>& shape = featureShapes[i];
         const Eigen::Matrix2f A{{shape[0], shape[1]},
                                 {shape[2], shape[3]}};
         const double scaleX = A.col(0).norm() * bboxScale;
@@ -194,9 +199,10 @@ int main(int argc, char *argv[]) {
         rect_xywh packedRect(0,0,W+padding,H+padding);
         rectangles.emplace_back(packedRect);
         Eigen::Vector3d P{0,0,0};
-        if (!closest3DPoints.empty())
-            P = closest3DPoints[i];
-        PatchInfo info{p.x, p.y, rect, packedRect, P.x(), P.y(), P.z()};
+        P = feature3DPoints[i];
+        const double e2 = normalizedReprojectionErrors[i];
+        const double e = std::sqrt(e2);
+        PatchInfo info{p.x, p.y, rect, packedRect, P.x(), P.y(), P.z(), e};
         patchMetadata.emplace_back(info);
     }
 
